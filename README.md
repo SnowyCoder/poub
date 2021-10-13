@@ -16,6 +16,7 @@ your id in the whitelist. Then start the program!
 
 All of the next configuration is done with the
 configured bot.
+
 ![telegram bot usage example](docs/images/readme01.png)
 
 At midnight the bot will fetch the lecture timings,
