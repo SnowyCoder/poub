@@ -1,0 +1,19 @@
+
+# Private env vars
+/.env.secret
+
+# Logs
+/*.log
+
+# Project specific runtime data
+/*.pkl
+/users.json
+/prints
+
+# Python specific data
+/venv
+/**/__pycache__
+
+# Editor data
+/.idea
+/.vsconfig
