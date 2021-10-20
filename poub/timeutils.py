@@ -15,7 +15,7 @@ class TimeRange(NamedTuple):
     end: int
 
     def overlaps(self, other: 'TimeRange') -> bool:
-        return self[1] > other[0] and self[1] > other[0]
+        return self[1] > other[0] and other[1] > self[0]
 
     @staticmethod
     def parse(data: str) -> 'TimeRange':

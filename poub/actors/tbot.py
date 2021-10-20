@@ -10,7 +10,7 @@ from telegram.ext import Updater, CallbackContext, ConversationHandler, Dispatch
 
 from actorutil.event import EventListener
 from timetable import normalize_teacher_name
-from .browser import BookResult, BookResultType
+from .browser import BookResult, BookResultType, BookTurnResultType
 from .userdb import User
 from config import config
 
@@ -67,13 +67,20 @@ class TelegramBotActor(EventListener, ThreadingActor):
 
     def _on_booked(self, user: User, res: BookResult):
         """Called when the BookActor has finished booking a user"""
-        for index, (info, file_path) in enumerate(res.booked):
-            self.bot.send_document(
-                user.tid,
-                document=file_path.open('rb'),
-                filename=f'presenza{index + 1}.pdf',
-                caption=f'{info.room} {info.trange}'
-            )
+        for index, turn in enumerate(res.booked):
+            if turn.res == BookTurnResultType.OK:
+                self.bot.send_document(
+                    user.tid,
+                    document=turn.pdf,
+                    filename=f'presenza{index + 1}.pdf',
+                    caption=f'{turn.info.room} {turn.info.trange}'
+                )
+            else:
+                self.bot.send_message(
+                    user.tid,
+                    f'{turn.info.room} {turn.info.trange} Already booked'
+                )
+
 
         err_name = ({
             BookResultType.OK: 'ok',

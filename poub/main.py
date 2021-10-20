@@ -32,6 +32,8 @@ def shutdown_actors():
 
 def main():
     logging.info("Poub started, waiting until midnight")
+    # Used to test:
+    # booker.proxy().book()
     try:
         waiter.run_sync()
     except KeyboardInterrupt:

@@ -32,13 +32,9 @@ class BookActor(ThreadingActor):
         waiter.remove(self._waiter_pre_midnight)
 
     def on_booked(self, user: User, book_res: BookResult):
-        logging.info(f"Booking result {book_res}")
+        logging.info(f"Booking done")
 
-        def remove_file():
-            for _, x in book_res.booked:
-                x.unlink(missing_ok=True)
-
-        self.events.emit('booked', user, book_res, then=remove_file)
+        self.events.emit('booked', user, book_res)
 
     def _on_links(self, user: User, bookings: set[BuildingTurn]):
         logging.info(f"Booking: {', '.join(f'{x.room} ({x.trange})' for x in bookings)} for {user.username}")

@@ -1,20 +1,21 @@
 import logging
 import time
 import uuid
+import base64
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, NamedTuple
 
 import pykka
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, ElementNotInteractableException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 from building import BuildingTurn
 
-from selenium.webdriver.support import expected_conditions as EC
 
 LOGIN_URL = 'https://idp.unimore.it'
 
@@ -29,57 +30,14 @@ class AlreadyBooked(Exception):
 
 class BrowserInteractor:
     def __init__(self):
-        self.print_dir = Path('prints').resolve()
-        self.print_file = self.print_dir / 'print.pdf'
-
         self.current_user = None  # type: Optional[str]
 
         options = webdriver.FirefoxOptions()
         options.headless = True
         profile = webdriver.FirefoxProfile()
-        self.setup_profile(profile)
 
         self.driver = webdriver.Firefox(options=options, firefox_profile=profile)
         self.driver.set_page_load_timeout(30)
-        self.set_aboutcheck()
-
-    def setup_profile(self, profile: webdriver.FirefoxProfile):
-        profile.set_preference('services.sync.prefs.sync.browser.download.manager.showWhenStarting', False)
-        profile.set_preference('pdfjs.disabled', True)
-        profile.set_preference('print.always_print_silent', True)
-        profile.set_preference('print.show_print_progress', False)
-        profile.set_preference('browser.download.show_plugins_in_list', False)
-
-        profile.set_preference('browser.download.folderList', 2)
-        profile.set_preference('browser.download.dir', '')
-        profile.set_preference('browser.download.manager.showWhenStarting', False)
-        profile.set_preference('browser.aboutConfig.showWarning', False)
-
-        profile.set_preference('print.print_headerright', '')
-        profile.set_preference('print.print_headercenter', '')
-        profile.set_preference('print.print_headerleft', '')
-        profile.set_preference('print.print_footerright', '')
-        profile.set_preference('print.print_footercenter', '')
-        profile.set_preference('print.print_footerleft', '')
-        profile.set_preference('browser.helperApps.neverAsk.saveToDisk',
-                               'application/octet-stream;application/vnd.ms-excel;text/html')
-
-    def set_aboutcheck(self):
-        self.driver.get('about:config')
-        time.sleep(1)
-
-        # Define Configurations
-        script = """
-                var prefs = Components.classes['@mozilla.org/preferences-service;1'].getService(Components.interfaces.nsIPrefBranch);
-                prefs.setBoolPref('print.always_print_silent', true);
-                prefs.setCharPref('print_printer', 'Print to File');
-                prefs.setBoolPref('print.printer_Print_to_File.print_to_file', true);
-                prefs.setCharPref('print.printer_Print_to_File.print_to_filename', '{}');
-                prefs.setBoolPref('print.printer_Print_to_File.show_print_progress', true);
-                """.format(self.print_file)
-
-        # Set Configurations
-        self.driver.execute_script(script)
 
     def logout(self):
         self.driver.delete_all_cookies()
@@ -108,11 +66,12 @@ class BrowserInteractor:
 
         self._handle_login(username, password)
 
-        submit_button = self.driver.find_element_by_xpath('//button[contains(., "Inserisci")]')
+        time.sleep(0.1)
         try:
+            submit_button = self.driver.find_element_by_xpath('//button[contains(., "Inserisci")]')
             submit_button.click()
             clicked = True
-        except ElementNotInteractableException:
+        except Exception:
             clicked = False
 
         if not clicked:
@@ -126,17 +85,35 @@ class BrowserInteractor:
             raise Exception('Cannot find booking button (??)')
 
         # Wait for badge loading
-        WebDriverWait(self.driver, 60)\
-            .until(EC.visibility_of_element_located((By.XPATH, '//div[contains(text(), "Posto: ")]')))
+
+        elem = WebDriverWait(self.driver, 60)\
+                .until(EC.any_of(
+                EC.visibility_of_element_located((By.XPATH, '//div[contains(text(), "Posto: ")]')),
+                EC.visibility_of_element_located((By.XPATH, '//div[contains(text(), "no permission")]'))
+                ))
+
+        text = elem.text
+        if 'no permission' in text:
+            if 'insert_multiple_time' in text:
+                raise AlreadyBooked()
+            else:
+                raise Exception(text)
+
         time.sleep(0.1)  # Don't know if it's necessary
         # Print!
-        self.print_dir.mkdir(parents=True, exist_ok=True)
-        self.driver.execute_script('window.print(); setTimeout(() => {window.seldone = true;}, 100);')
-        WebDriverWait(self.driver, 60)\
-            .until(lambda d: d.execute_script('return !!window.seldone') and self.print_file.is_file())
-        new_file = self.print_file.parent / (uuid.uuid4().hex + '.pdf')
+        ret = self.driver.print_page()
+        return base64.b64decode(ret)
 
-        return self.print_file.rename(new_file)
+    def save_debug_page(self):
+        tstamp = int(time.time() * 1000)
+        url = self.driver.current_url
+        body = self.driver.execute_script("return document.body.innerHTML;")
+        try:
+            with open(f'{tstamp}.html', 'wt') as fd:
+                fd.write(url + '\n' * 3)
+                fd.write(body)
+        except:
+            pass
 
     def stop(self):
         self.driver.quit()
@@ -149,9 +126,21 @@ class BookResultType(Enum):
     UNKNOWN_ERR = 9
 
 
+class BookTurnResultType(Enum):
+    OK = 1
+    ALREADY_BOOKED = 2
+    UNKNOWN_ERR = 3
+
+
+class BookTurnResult(NamedTuple):
+    info: BuildingTurn
+    res: BookTurnResultType
+    pdf: Optional[bytes]
+
+
 @dataclass
 class BookResult:
-    booked: list[tuple[BuildingTurn, Path]]
+    booked: list[BookTurnResult]
     remaining: list[BuildingTurn]
     type: BookResultType
 
@@ -164,7 +153,7 @@ class BrowserActor(pykka.ThreadingActor):
 
     def process_bookings(self, username: str, password: str, turns: set[BuildingTurn]) -> BookResult:
         turns = list(turns)
-        booked = []
+        booked = []  # type: list[BookTurnResult]
 
         for i, turn in enumerate(turns):
             retry = 3
@@ -172,22 +161,24 @@ class BrowserActor(pykka.ThreadingActor):
                 retry -= 1
                 try:
                     self._logger.info(f"Booking {i}: {turn.room} {turn.trange} {turn.book_link}")
-                    link = self._browser.book_one(username, password, turn.book_link)
-                    booked.append((turn, link))
+                    data = self._browser.book_one(username, password, turn.book_link)
+                    booked.append(BookTurnResult(turn, BookTurnResultType.OK, data))
                     retry = 0
                 except LoginException:
                     self._logger.exception('Wrong login for user ' + username)
                     return BookResult(booked, turns[i:], BookResultType.LOGIN_FAILED)
                 except TimeoutException:
                     if retry > 0:
-                        self._logger.warning(f'Timeout, retries: {retry}')
+                        self._logger.exception(f'Timeout, retries: {retry}')
                     else:
                         self._logger.exception(f'Timeout exception ({i}/{len(turns)})')
                         return BookResult(booked, turns[i:], BookResultType.TIMEOUT)
                 except AlreadyBooked:
                     self._logger.warning(f"Already booked ({i}/{len(turns)})")
+                    booked.append(BookTurnResult(turn, BookTurnResultType.ALREADY_BOOKED, None))
                     retry = 0
                 except Exception:
+                    self._browser.save_debug_page()
                     self._logger.exception(f'Unknown exception ({i}/{len(turns)})')
                     return BookResult(booked, turns[i:], BookResultType.UNKNOWN_ERR)
 
